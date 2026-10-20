@@ -4,7 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import io.github.xiaoyouchr.ghostdownloader.miuix.engine.AppDirs
+import io.github.xiaoyouchr.ghostdownloader.miuix.engine.DownloadMode
 import io.github.xiaoyouchr.ghostdownloader.miuix.engine.EngineStatus
 import io.github.xiaoyouchr.ghostdownloader.miuix.engine.HttpDownloadEngine
 import io.github.xiaoyouchr.ghostdownloader.miuix.engine.NameConflictPolicy
@@ -37,7 +37,7 @@ enum class AppTab(val label: String) {
 /**
  * 应用状态。
  *
- * - 真实模式（[engine] 非空）：任务来自 [HttpDownloadEngine]，UI 每 500ms 调 [onTick] 拉取快照；
+ * - 真实模式（[engine] 非空）：任务来自 [HttpDownloadEngine]，UI 每 500ms 调 [onTick] 拉取快照并同步设置；
  * - 演示模式（[demo] = true）：使用 [MockTasks] 模拟数据，仅用于截图 / 无引擎预览。
  */
 class AppState(
@@ -81,30 +81,30 @@ class AppState(
 
     val tasks = mutableStateListOf<DownloadTask>()
 
-    private var demoTick = 0f
-
     init {
         engine?.let {
             settings.downloadFolder = it.defaultFolder()
             settings.maxTaskNum = it.maxConcurrent
-            settings.preBlockNum = it.connectionsPerTask
+            settings.preBlockNum = it.subworkerCount
             refreshFromEngine()
         }
         if (demo) tasks.addAll(MockTasks.tasks)
         if (draftFolder.isBlank()) draftFolder = settings.downloadFolder
     }
 
-    /** Compose 定时调用：真实模式拉取引擎快照，演示模式推进模拟进度。 */
+    /** Compose 定时调用：真实模式拉取引擎快照并同步设置，演示模式推进模拟进度。 */
     fun onTick() {
         if (demo) {
-            demoTick += TICK_SECONDS
             advanceDemo(TICK_SECONDS)
             return
         }
         engine?.let {
             if (it.maxConcurrent != settings.maxTaskNum) it.maxConcurrent = settings.maxTaskNum
-            if (it.connectionsPerTask != settings.preBlockNum.coerceIn(1, 16)) {
-                it.connectionsPerTask = settings.preBlockNum.coerceIn(1, 16)
+            val subworkers = settings.preBlockNum.coerceIn(1, SUBWORKER_LIMIT)
+            if (it.subworkerCount != subworkers) it.subworkerCount = subworkers
+            if (it.autoSpeedUp != settings.autoSpeedUp) it.autoSpeedUp = settings.autoSpeedUp
+            if (it.preserveLastModified != settings.preserveLastModified) {
+                it.preserveLastModified = settings.preserveLastModified
             }
         }
         refreshFromEngine()
@@ -155,7 +155,7 @@ class AppState(
 
     // -------------------------------------------------------------- 新建任务
 
-    /** 解析用户粘贴的链接（真实引擎走 HTTP 探测）。 */
+    /** 解析用户粘贴的链接（真实引擎做两阶段 Range 探测）。 */
     suspend fun parseDraft() {
         val url = draftUrl.trim()
         if (url.isBlank()) {
@@ -176,13 +176,15 @@ class AppState(
             draftCategory = categoryFor(result.fileName)
             draftParsed = true
         } catch (error: Throwable) {
-            draftParseFailed(error)
+            draftParsed = false
+            draftProbe = null
+            draftError = error.message ?: "链接解析失败"
         } finally {
             draftBusy = false
         }
     }
 
-    /** 确认下载：创建 Task 并立刻加入引擎队列。 */
+    /** 确认下载：创建 Task（引擎会立即入队调度）。 */
     fun confirmDraft() {
         val engine = engine
         val probe = draftProbe
@@ -191,21 +193,19 @@ class AppState(
             return
         }
         val folder = draftFolder.ifBlank { settings.downloadFolder }
-        val name = draftName.ifBlank { probe.fileName }
         runCatching {
-            val snapshot = engine.addTask(
+            engine.addTask(
                 url = probe.url,
                 folder = folder,
-                preferredName = name,
+                preferredName = draftName.ifBlank { probe.fileName },
                 totalBytes = probe.totalBytes,
-                resumable = probe.resumable,
+                canUseRange = probe.canUseRange,
                 policy = if (settings.nameConflict == NameConflictOption.OVERWRITE) {
                     NameConflictPolicy.OVERWRITE
                 } else {
                     NameConflictPolicy.KEEP_BOTH
                 }
             )
-            engine.start(snapshot.id)
             showAddTaskSheet = false
             refreshFromEngine()
         }.onFailure { error ->
@@ -213,18 +213,12 @@ class AppState(
         }
     }
 
-    private fun draftParseFailed(error: Throwable) {
-        draftParsed = false
-        draftProbe = null
-        draftError = error.message ?: "链接解析失败"
-    }
-
     private fun parseDraftDemo(url: String) {
         val fileName = url.substringAfterLast('/').substringBefore('?').ifBlank { "download.bin" }
         draftName = fileName
         draftCategory = categoryFor(fileName)
         draftParsed = true
-        draftProbe = ProbeResult(url, fileName, 0L, false, null)
+        draftProbe = ProbeResult(url, fileName, 0L, canUseRange = false, contentType = null, lastModified = null)
     }
 
     // -------------------------------------------------------------- 任务操作
@@ -238,15 +232,34 @@ class AppState(
         when (task.status) {
             TaskStatus.RUNNING, TaskStatus.WAITING -> engine?.pause(id)
             TaskStatus.PAUSED, TaskStatus.FAILED -> engine?.start(id)
-            TaskStatus.COMPLETED -> Unit
+            TaskStatus.COMPLETED -> engine?.redownload(id)
         }
+        refreshFromEngine()
+    }
+
+    /** 重新下载（已完成任务）：删除成品与进度文件后重新开始。 */
+    fun redownloadTask(id: Long) {
+        if (demo) {
+            val index = tasks.indexOfFirst { it.id == id }
+            if (index >= 0) {
+                tasks[index] = tasks[index].copy(
+                    status = TaskStatus.RUNNING,
+                    downloadedBytes = 0L,
+                    error = null
+                )
+            }
+            return
+        }
+        engine?.redownload(id)
         refreshFromEngine()
     }
 
     fun retryTask(id: Long) {
         if (demo) {
             val index = tasks.indexOfFirst { it.id == id }
-            if (index >= 0) tasks[index] = tasks[index].copy(status = TaskStatus.WAITING, error = null, downloadedBytes = 0L)
+            if (index >= 0) {
+                tasks[index] = tasks[index].copy(status = TaskStatus.WAITING, error = null, downloadedBytes = 0L)
+            }
             return
         }
         engine?.start(id)
@@ -342,10 +355,10 @@ class AppState(
     private fun refreshFromEngine() {
         val snapshots = engine?.snapshots() ?: return
         tasks.clear()
-        snapshots.forEach { tasks.add(it.toDownloadTask(engine.connectionsPerTask)) }
+        snapshots.forEach { tasks.add(it.toDownloadTask()) }
     }
 
-    private fun TaskSnapshot.toDownloadTask(maxConnectionsFallback: Int) = DownloadTask(
+    private fun TaskSnapshot.toDownloadTask() = DownloadTask(
         id = id,
         name = name,
         folder = folder,
@@ -360,14 +373,17 @@ class AppState(
         downloadedBytes = downloadedBytes,
         totalBytes = totalBytes,
         speedBytes = speedBytes,
-        connections = connections,
-        maxConnections = maxConnections.coerceAtLeast(1).coerceAtLeast(maxConnectionsFallback / 2),
+        connections = subworkers,
+        maxConnections = maxSubworkers,
         isTorrent = false,
         error = error,
         completedAt = completedAt?.let(::formatCompletedAt),
         fileCount = 1,
         url = url,
-        outputPath = outputPath
+        outputPath = outputPath,
+        progressPath = progressPath,
+        modeLabel = mode.label,
+        detail = detail
     )
 
     private fun formatCompletedAt(epochMillis: Long): String =
@@ -414,7 +430,8 @@ class AppState(
                 speedBytes = Random.nextLong(1L * 1024 * 1024, 18L * 1024 * 1024),
                 connections = Random.nextInt(1, 9),
                 maxConnections = 8,
-                fileCount = 1
+                fileCount = 1,
+                modeLabel = DownloadMode.RANGE.label
             )
         )
         showAddTaskSheet = false
@@ -465,5 +482,6 @@ class AppState(
 
     companion object {
         private const val TICK_SECONDS = 0.5f
+        private const val SUBWORKER_LIMIT = 16
     }
 }

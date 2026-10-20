@@ -12,7 +12,7 @@ import java.io.File
  * gradlew :preview:engineSmoke -Purl=https://example.com/file.zip
  * ```
  *
- * 无 GUI 地走完「探测 → 建任务 → 多线程下载 → 校验落盘」全流程，方便在真机之外验证网络与引擎。
+ * 无 GUI 地走完「两阶段 Range 探测 → 入队 → 分片/单流下载 → 校验落盘」全流程。
  */
 fun main(args: Array<String>) {
     val url = args.firstOrNull()?.takeIf { it.isNotBlank() }
@@ -22,15 +22,17 @@ fun main(args: Array<String>) {
     val engine = HttpDownloadEngine(AppDirs(downloadDir = downloadDir, dataDir = File(root, "data")))
     try {
         val probe = engine.probe(url)
-        println("probe: name=${probe.fileName} size=${probe.totalBytes} resumable=${probe.resumable} type=${probe.contentType}")
+        println(
+            "probe: name=${probe.fileName} size=${probe.totalBytes} " +
+                "range=${probe.canUseRange} type=${probe.contentType} url=${probe.url}"
+        )
         val task = engine.addTask(
             url = probe.url,
             folder = downloadDir.absolutePath,
             preferredName = probe.fileName,
             totalBytes = probe.totalBytes,
-            resumable = probe.resumable
+            canUseRange = probe.canUseRange
         )
-        engine.start(task.id)
 
         val deadline = System.currentTimeMillis() + SMOKE_TIMEOUT_MS
         var lastPrinted = -1L
@@ -39,13 +41,14 @@ fun main(args: Array<String>) {
             if (snapshot.downloadedBytes != lastPrinted) {
                 println(
                     "progress: ${snapshot.downloadedBytes}/${snapshot.totalBytes} " +
-                        "speed=${snapshot.speedBytes}B/s connections=${snapshot.connections}"
+                        "speed=${snapshot.speedBytes}B/s mode=${snapshot.mode} subworkers=${snapshot.subworkers} " +
+                        "detail=${snapshot.detail ?: "-"}"
                 )
                 lastPrinted = snapshot.downloadedBytes
             }
             when (snapshot.status) {
                 EngineStatus.COMPLETED -> {
-                    val output = File(snapshot.outputPath!!)
+                    val output = File(snapshot.outputPath)
                     println("completed: ${output.absolutePath} (${output.length()} bytes)")
                     println("SMOKE OK")
                     return

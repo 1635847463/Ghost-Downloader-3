@@ -105,10 +105,10 @@ fun SettingsScreen(state: AppState, contentPadding: PaddingValues) {
                 )
                 SliderPreference(
                     title = "预分配线程数",
-                    summary = "线程越多，下载越快",
+                    summary = "每个任务的分片连接数（引擎上限 16）",
                     value = settings.preBlockNum.toFloat(),
-                    valueRange = 1f..64f,
-                    steps = 62,
+                    valueRange = 1f..16f,
+                    steps = 14,
                     valueText = "${settings.preBlockNum}",
                     onValueChange = { settings.preBlockNum = it.roundToInt() }
                 )

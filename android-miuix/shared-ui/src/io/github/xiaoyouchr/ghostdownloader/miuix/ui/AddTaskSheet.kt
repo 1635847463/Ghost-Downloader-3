@@ -62,8 +62,15 @@ fun AddTaskSheet(state: AppState) {
                             append(" · ")
                             append(formatSize(probe.totalBytes))
                         }
-                        if (probe != null && probe.resumable) {
-                            append(" · 支持断点续传")
+                        if (probe != null) {
+                            append(" · ")
+                            append(
+                                when {
+                                    probe.canUseRange -> "分片下载（支持断点续传）"
+                                    probe.totalBytes > 0L -> "单线程下载"
+                                    else -> "大小未知，单线程下载"
+                                }
+                            )
                         }
                     },
                     fontSize = 12.sp,
@@ -93,7 +100,7 @@ fun AddTaskSheet(state: AppState) {
                 }
             } else {
                 Text(
-                    text = "支持 HTTP / HTTPS 链接，自动多线程分块下载；暂停后可继续（服务器支持 Range 时）。",
+                    text = "支持 HTTP / HTTPS 链接：先做 Range 探测，能分片就多线程 + 断点续传；不支持 Range 时自动单线程下载。",
                     fontSize = 12.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(top = 10.dp)

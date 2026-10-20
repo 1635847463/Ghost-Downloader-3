@@ -34,7 +34,10 @@ data class DownloadTask(
     val error: String? = null,
     val completedAt: String? = null,
     val url: String = "",
-    val outputPath: String? = null
+    val outputPath: String? = null,
+    val progressPath: String? = null,
+    val modeLabel: String = "",
+    val detail: String? = null
 ) {
     val progress: Float
         get() = when {

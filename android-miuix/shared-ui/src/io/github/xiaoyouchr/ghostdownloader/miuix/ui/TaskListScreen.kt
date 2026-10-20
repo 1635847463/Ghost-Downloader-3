@@ -116,8 +116,8 @@ fun TaskListScreen(
                 TaskCard(
                     task = task,
                     onToggle = {
-                        state.retryTask(task.id)
-                        scope.launch { snackbarHostState.showSnackbar("已重新开始「${task.name}」") }
+                        state.redownloadTask(task.id)
+                        scope.launch { snackbarHostState.showSnackbar("已重新下载「${task.name}」") }
                     },
                     onMore = { actionTask = task },
                     onOpen = {
@@ -175,6 +175,15 @@ fun TaskListScreen(
                         scope.launch { snackbarHostState.showSnackbar("下载存储在 ${task.folder}") }
                     }
                     actionTask = null
+                }
+            )
+            BasicComponent(
+                title = "重新下载",
+                summary = "删除成品与进度文件后从头开始",
+                onClick = {
+                    state.redownloadTask(task.id)
+                    actionTask = null
+                    scope.launch { snackbarHostState.showSnackbar("已重新下载「${task.name}」") }
                 }
             )
         }
@@ -296,10 +305,18 @@ private fun TaskCard(
                 Spacer(Modifier.width(12.dp))
             }
             Text(
-                text = task.category ?: "1 个文件",
+                text = task.modeLabel.ifBlank { "分片下载" },
                 fontSize = 12.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary
             )
+            if (task.category != null) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = task.category,
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                )
+            }
             Spacer(Modifier.weight(1f))
             if (task.status == TaskStatus.COMPLETED) {
                 Text(
@@ -308,6 +325,15 @@ private fun TaskCard(
                     color = MiuixTheme.colorScheme.primary
                 )
             }
+        }
+
+        task.detail?.let { detail ->
+            Text(
+                text = detail,
+                fontSize = 12.sp,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(top = 6.dp)
+            )
         }
 
         task.error?.let { message ->
