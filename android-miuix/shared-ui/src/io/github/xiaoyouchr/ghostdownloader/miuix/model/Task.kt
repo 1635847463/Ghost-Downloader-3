@@ -32,7 +32,9 @@ data class DownloadTask(
     val fileCount: Int = 1,
     val isTorrent: Boolean = false,
     val error: String? = null,
-    val completedAt: String? = null
+    val completedAt: String? = null,
+    val url: String = "",
+    val outputPath: String? = null
 ) {
     val progress: Float
         get() = when {

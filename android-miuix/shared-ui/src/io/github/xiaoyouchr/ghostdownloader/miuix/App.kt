@@ -1,11 +1,13 @@
 package io.github.xiaoyouchr.ghostdownloader.miuix
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.isSystemInDarkTheme
+import io.github.xiaoyouchr.ghostdownloader.miuix.engine.HttpDownloadEngine
+import io.github.xiaoyouchr.ghostdownloader.miuix.platform.PlatformFiles
 import io.github.xiaoyouchr.ghostdownloader.miuix.state.AppState
 import io.github.xiaoyouchr.ghostdownloader.miuix.state.ThemeModeOption
 import io.github.xiaoyouchr.ghostdownloader.miuix.theme.GhostMiuixTheme
@@ -15,17 +17,21 @@ import kotlinx.coroutines.delay
 /**
  * 应用根组件：Android 与 Desktop 预览共用。
  *
- * 数据层为演示用的 [AppState]（模拟下载进度），UI 全部由 Miuix 组件构成。
+ * [engine] 为内置下载引擎（HTTP/HTTPS 多线程 + 断点续传），[platformFiles] 负责打开文件。
  * [onDarkModeChange] 供 Android 端同步系统状态栏 / 导航栏图标颜色。
  */
 @Composable
-fun App(onDarkModeChange: ((Boolean) -> Unit)? = null) {
-    val state = remember { AppState() }
+fun App(
+    engine: HttpDownloadEngine? = null,
+    platformFiles: PlatformFiles? = null,
+    onDarkModeChange: ((Boolean) -> Unit)? = null
+) {
+    val state = remember(engine) { AppState(engine = engine, platformFiles = platformFiles) }
 
     LaunchedEffect(Unit) {
         while (true) {
-            delay(1000)
-            state.advance(deltaSeconds = 1f)
+            delay(TICK_INTERVAL_MS)
+            state.onTick()
         }
     }
 
@@ -47,3 +53,5 @@ fun App(onDarkModeChange: ((Boolean) -> Unit)? = null) {
         AppShell(state)
     }
 }
+
+private const val TICK_INTERVAL_MS = 500L

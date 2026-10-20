@@ -2,7 +2,6 @@ package io.github.xiaoyouchr.ghostdownloader.miuix.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,7 +26,6 @@ import io.github.xiaoyouchr.ghostdownloader.miuix.model.DownloadTask
 import io.github.xiaoyouchr.ghostdownloader.miuix.model.TaskStatus
 import io.github.xiaoyouchr.ghostdownloader.miuix.state.AppState
 import io.github.xiaoyouchr.ghostdownloader.miuix.state.TaskFilter
-import io.github.xiaoyouchr.ghostdownloader.miuix.util.formatShareRatio
 import io.github.xiaoyouchr.ghostdownloader.miuix.util.formatSizeProgress
 import io.github.xiaoyouchr.ghostdownloader.miuix.util.formatSpeed
 import kotlinx.coroutines.CoroutineScope
@@ -51,8 +49,8 @@ import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 任务列表页：Material3 的 FilterChip / Card / LinearProgressIndicator / FAB
- * 全部替换为 Miuix 的 TabRow / Card / LinearProgressIndicator / FloatingActionButton。
+ * 任务列表页：数据来自内置下载引擎（或演示数据），
+ * 支持暂停/继续、重试、打开文件、删除任务（可选删文件）。
  */
 @Composable
 fun TaskListScreen(
@@ -92,11 +90,20 @@ fun TaskListScreen(
                     onToggle = {
                         state.toggleTask(task.id)
                         scope.launch {
-                            val text = if (task.status == TaskStatus.RUNNING) "已暂停「${task.name}」" else "已继续「${task.name}」"
+                            val text = when (task.status) {
+                                TaskStatus.RUNNING -> "已暂停「${task.name}」"
+                                TaskStatus.FAILED -> "正在重试「${task.name}」"
+                                else -> "已开始「${task.name}」"
+                            }
                             snackbarHostState.showSnackbar(text)
                         }
                     },
-                    onMore = { actionTask = task }
+                    onMore = { actionTask = task },
+                    onOpen = {
+                        if (!state.openFile(task)) {
+                            scope.launch { snackbarHostState.showSnackbar("下载存储在 ${task.folder}") }
+                        }
+                    }
                 )
             }
         }
@@ -109,10 +116,15 @@ fun TaskListScreen(
                 TaskCard(
                     task = task,
                     onToggle = {
-                        state.toggleTask(task.id)
+                        state.retryTask(task.id)
                         scope.launch { snackbarHostState.showSnackbar("已重新开始「${task.name}」") }
                     },
-                    onMore = { actionTask = task }
+                    onMore = { actionTask = task },
+                    onOpen = {
+                        if (!state.openFile(task)) {
+                            scope.launch { snackbarHostState.showSnackbar("下载存储在 ${task.folder}") }
+                        }
+                    }
                 )
             }
         }
@@ -126,7 +138,11 @@ fun TaskListScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = if (state.searchQuery.isNotBlank()) "没有匹配「${state.searchQuery}」的任务" else "暂无任务",
+                        text = when {
+                            state.searchQuery.isNotBlank() -> "没有匹配「${state.searchQuery}」的任务"
+                            state.taskFilter == TaskFilter.COMPLETED -> "暂无已完成的任务"
+                            else -> "暂无任务，点右下角 + 新建"
+                        },
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                     )
                 }
@@ -140,41 +156,83 @@ fun TaskListScreen(
         onDismissRequest = { actionTask = null }
     ) {
         val task = actionTask ?: return@OverlayBottomSheet
+
+        if (task.status == TaskStatus.COMPLETED) {
+            BasicComponent(
+                title = "打开文件",
+                summary = task.outputPath,
+                onClick = {
+                    if (!state.openFile(task)) {
+                        scope.launch { snackbarHostState.showSnackbar("无法打开文件，路径：${task.folder}") }
+                    }
+                    actionTask = null
+                }
+            )
+            BasicComponent(
+                title = "打开所在文件夹",
+                onClick = {
+                    if (!state.openFolder(task)) {
+                        scope.launch { snackbarHostState.showSnackbar("下载存储在 ${task.folder}") }
+                    }
+                    actionTask = null
+                }
+            )
+        }
+
+        if (task.status == TaskStatus.RUNNING || task.status == TaskStatus.WAITING) {
+            BasicComponent(
+                title = "暂停",
+                summary = "保留已下载的分块，稍后可继续",
+                onClick = {
+                    state.toggleTask(task.id)
+                    actionTask = null
+                }
+            )
+        } else if (task.status != TaskStatus.COMPLETED) {
+            BasicComponent(
+                title = if (task.status == TaskStatus.FAILED) "重试下载" else "继续下载",
+                summary = task.error,
+                onClick = {
+                    state.toggleTask(task.id)
+                    actionTask = null
+                }
+            )
+        }
+
         BasicComponent(
-            title = "重新下载",
-            summary = "清空进度后重新开始",
-            onClick = {
-                state.retryTask(task.id)
-                actionTask = null
-                scope.launch { snackbarHostState.showSnackbar("已重新开始「${task.name}」") }
-            }
-        )
-        BasicComponent(
-            title = "暂停 / 继续",
-            onClick = {
-                state.toggleTask(task.id)
-                actionTask = null
-            }
-        )
-        BasicComponent(
-            title = "删除任务",
-            summary = "不会删除已下载的文件",
+            title = "删除任务（保留文件）",
+            summary = "未完成的分块文件会被清理",
             onClick = {
                 state.removeTask(task.id)
                 actionTask = null
                 scope.launch { snackbarHostState.showSnackbar("已删除「${task.name}」") }
             }
         )
+        BasicComponent(
+            title = "删除任务并删除文件",
+            summary = "同时删除已下载的成品文件",
+            onClick = {
+                state.removeTaskWithFiles(task.id)
+                actionTask = null
+                scope.launch { snackbarHostState.showSnackbar("已删除「${task.name}」及其文件") }
+            }
+        )
     }
 }
 
 @Composable
-private fun TaskCard(task: DownloadTask, onToggle: () -> Unit, onMore: () -> Unit) {
+private fun TaskCard(
+    task: DownloadTask,
+    onToggle: () -> Unit,
+    onMore: () -> Unit,
+    onOpen: () -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
-        insideMargin = PaddingValues(16.dp)
+        insideMargin = PaddingValues(16.dp),
+        onClick = if (task.status == TaskStatus.COMPLETED) onOpen else null
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -216,39 +274,38 @@ private fun TaskCard(task: DownloadTask, onToggle: () -> Unit, onMore: () -> Uni
             )
         }
 
+        val indeterminate = task.status == TaskStatus.RUNNING && task.totalBytes <= 0L
         LinearProgressIndicator(
-            progress = task.progress,
+            progress = when {
+                indeterminate -> null
+                task.totalBytes > 0L -> task.progress
+                else -> 0f
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 10.dp, bottom = 8.dp)
         )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (task.isTorrent) {
+            if (task.status == TaskStatus.RUNNING) {
                 Text(
-                    text = "↑ ${formatSpeed(task.uploadSpeedBytes)}",
+                    text = "连接 ${task.connections.coerceAtLeast(1)}/${task.maxConnections.coerceAtLeast(1)}",
                     fontSize = 12.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                 )
                 Spacer(Modifier.width(12.dp))
             }
             Text(
-                text = "${task.fileCount} 个文件",
+                text = task.category ?: "1 个文件",
                 fontSize = 12.sp,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary
             )
             Spacer(Modifier.weight(1f))
-            if (task.isTorrent && task.status == TaskStatus.RUNNING) {
+            if (task.status == TaskStatus.COMPLETED) {
                 Text(
-                    text = "连接 ${task.connections}/${task.maxConnections}",
+                    text = "点击打开",
                     fontSize = 12.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = "分享率 ${formatShareRatio(task.shareRatio)}",
-                    fontSize = 12.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    color = MiuixTheme.colorScheme.primary
                 )
             }
         }
@@ -266,7 +323,7 @@ private fun TaskCard(task: DownloadTask, onToggle: () -> Unit, onMore: () -> Uni
             modifier = Modifier.padding(top = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val running = task.status == TaskStatus.RUNNING
+            val running = task.status == TaskStatus.RUNNING || task.status == TaskStatus.WAITING
             Button(
                 onClick = onToggle,
                 colors = ButtonDefaults.buttonColors(),
@@ -278,7 +335,15 @@ private fun TaskCard(task: DownloadTask, onToggle: () -> Unit, onMore: () -> Uni
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(text = if (running) "暂停" else if (task.status.isFinished) "重新下载" else "继续", fontSize = 14.sp)
+                Text(
+                    text = when {
+                        running -> "暂停"
+                        task.status == TaskStatus.COMPLETED -> "重新下载"
+                        task.status == TaskStatus.FAILED -> "重试"
+                        else -> "继续"
+                    },
+                    fontSize = 14.sp
+                )
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onMore) {

@@ -16,7 +16,7 @@ android {
         applicationId = "io.github.xiaoyouchr.ghostdownloader.miuix"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
+        versionCode = 2
         versionName = "4.4.3"
     }
 
@@ -40,4 +40,5 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.okhttp)
 }

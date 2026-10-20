@@ -17,6 +17,10 @@ dependencies {
     implementation(libs.miuix.preference)
     implementation(libs.miuix.icons)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.okhttp)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.core)
 }
 
 compose.desktop {
@@ -46,3 +50,19 @@ tasks.register<JavaExec>("screenshot") {
     )
 }
 
+// 下载引擎冒烟测试：gradlew :preview:engineSmoke -Purl=https://... 
+tasks.register<JavaExec>("engineSmoke") {
+    group = "verification"
+    description = "Probe + download a URL with the built-in engine (no GUI)"
+    mainClass.set("io.github.xiaoyouchr.ghostdownloader.miuix.SmokeDownloadKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    args(
+        project.findProperty("url")?.toString()
+            ?: "https://raw.githubusercontent.com/XiaoYouChR/Ghost-Downloader-3/main/README.md"
+    )
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(21))
+        }
+    )
+}

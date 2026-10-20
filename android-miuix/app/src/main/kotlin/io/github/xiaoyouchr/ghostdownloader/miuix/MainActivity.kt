@@ -12,10 +12,27 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import io.github.xiaoyouchr.ghostdownloader.miuix.engine.AppDirs
+import io.github.xiaoyouchr.ghostdownloader.miuix.engine.HttpDownloadEngine
+import io.github.xiaoyouchr.ghostdownloader.miuix.platform.AndroidPlatformFiles
+import java.io.File
 
 class MainActivity : ComponentActivity() {
+
+    private var downloadEngine: HttpDownloadEngine? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 下载目录放在应用专属外部目录：API 26+ 无需存储权限，卸载 App 时一并清理。
+        val externalRoot = getExternalFilesDir(null) ?: filesDir
+        val dirs = AppDirs(
+            downloadDir = File(externalRoot, "Download"),
+            dataDir = filesDir
+        )
+        val engine = HttpDownloadEngine(dirs)
+        downloadEngine = engine
+        val platformFiles = AndroidPlatformFiles(this)
 
         setContent {
             var darkMode by remember { mutableStateOf(false) }
@@ -33,7 +50,17 @@ class MainActivity : ComponentActivity() {
                 onDispose { }
             }
 
-            App(onDarkModeChange = { darkMode = it })
+            App(
+                engine = engine,
+                platformFiles = platformFiles,
+                onDarkModeChange = { darkMode = it }
+            )
         }
+    }
+
+    override fun onDestroy() {
+        downloadEngine?.close()
+        downloadEngine = null
+        super.onDestroy()
     }
 }

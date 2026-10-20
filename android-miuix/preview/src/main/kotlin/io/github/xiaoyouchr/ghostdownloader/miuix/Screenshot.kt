@@ -27,7 +27,7 @@ fun main() {
         themeMode: ThemeModeOption,
         prepare: (AppState) -> Unit = {}
     ) {
-        val state = AppState()
+        val state = AppState(demo = true)
         prepare(state)
         val scene = ImageComposeScene(
             width = width,

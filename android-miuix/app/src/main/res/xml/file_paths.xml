@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 下载目录：getExternalFilesDir(null)/Download -->
+    <external-files-path
+        name="external_downloads"
+        path="." />
+    <!-- 兜底：应用内部存储 -->
+    <files-path
+        name="internal_files"
+        path="." />
+</paths>
