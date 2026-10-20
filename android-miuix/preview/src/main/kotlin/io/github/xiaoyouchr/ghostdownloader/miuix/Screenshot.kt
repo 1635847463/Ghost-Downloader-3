@@ -34,7 +34,7 @@ fun main() {
             height = height,
             density = Density(2f)
         ) {
-            GhostMiuixTheme(themeMode = themeMode, dynamicColor = false) {
+            GhostMiuixTheme(themeMode = themeMode) {
                 AppShell(state)
             }
         }

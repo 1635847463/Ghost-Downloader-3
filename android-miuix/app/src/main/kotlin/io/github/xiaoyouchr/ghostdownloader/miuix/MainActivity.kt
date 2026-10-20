@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
             App(
                 engine = engine,
                 platformFiles = platformFiles,
+                bridgeTokenFile = File(filesDir, "bridge-token.txt"),
                 onDarkModeChange = { darkMode = it }
             )
         }

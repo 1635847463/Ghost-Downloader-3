@@ -45,6 +45,7 @@ data class TaskSnapshot(
     val url: String,
     val name: String,
     val folder: String,
+    val category: String?,
     val status: EngineStatus,
     val downloadedBytes: Long,
     val totalBytes: Long,

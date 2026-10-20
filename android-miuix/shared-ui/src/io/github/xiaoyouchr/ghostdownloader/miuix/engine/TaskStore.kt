@@ -52,6 +52,8 @@ internal class TaskStore(dataDir: File) {
         append(",\"completedAt\":").append(task.completedAt ?: 0L)
         append(",\"downloadedBytes\":").append(task.downloadedBytes)
         append(",\"subworkerCount\":").append(task.subworkerCount)
+        append(",\"headers\":\"").append(b64(encodeHeaders(task.headers))).append('"')
+        append(",\"category\":\"").append(b64(task.category ?: "")).append('"')
         append('}')
     }
 
@@ -69,9 +71,22 @@ internal class TaskStore(dataDir: File) {
             createdAt = number(line, "createdAt") ?: 0L,
             completedAt = number(line, "completedAt")?.takeIf { it > 0L },
             downloadedBytes = number(line, "downloadedBytes") ?: 0L,
-            subworkerCount = (number(line, "subworkerCount") ?: 8L).toInt().coerceIn(1, 32)
+            subworkerCount = (number(line, "subworkerCount") ?: 8L).toInt().coerceIn(1, 16),
+            headers = text(line, "headers")?.let(::unb64)?.let(::decodeHeaders) ?: emptyMap(),
+            category = text(line, "category")?.let(::unb64)?.ifBlank { null }
         )
     }.getOrNull()
+
+    private fun encodeHeaders(headers: Map<String, String>): String =
+        headers.entries.joinToString("\n") { "${it.key}\t${it.value}" }
+
+    private fun decodeHeaders(value: String): Map<String, String> = value.lineSequence()
+        .filter { it.isNotBlank() }
+        .mapNotNull { line ->
+            val index = line.indexOf('\t')
+            if (index <= 0) null else line.substring(0, index) to line.substring(index + 1)
+        }
+        .toMap()
 
     private fun text(line: String, key: String): String? =
         Regex("\"$key\"\\s*:\\s*\"([^\"]*)\"").find(line)?.groupValues?.getOrNull(1)
@@ -186,5 +201,7 @@ internal data class PersistedTask(
     val createdAt: Long,
     val completedAt: Long?,
     val downloadedBytes: Long,
-    val subworkerCount: Int
+    val subworkerCount: Int,
+    val headers: Map<String, String> = emptyMap(),
+    val category: String? = null
 )

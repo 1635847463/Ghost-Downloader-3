@@ -19,7 +19,6 @@ enum class NameConflictOption(val label: String) {
 /** 设置页的数据层。默认值与上游 app/config/cfg.py 保持一致，便于后续接真实配置。 */
 class AppSettings {
     var themeMode by mutableStateOf(ThemeModeOption.FOLLOW_SYSTEM)
-    var dynamicColor by mutableStateOf(true)
     var language by mutableStateOf("简体中文")
 
     var downloadFolder by mutableStateOf("/storage/emulated/0/Download")
@@ -32,8 +31,8 @@ class AppSettings {
     var maxReassignSizeKb by mutableStateOf(512)
     var useSystemDns by mutableStateOf(true)
 
+    /** 下载分类：按扩展名自动落到「视频/音频/软件/压缩包/图片/文档」子目录。 */
     var enableCategory by mutableStateOf(false)
-    var categoryCount by mutableStateOf(4)
 
     var browserExtensionEnabled by mutableStateOf(true)
     var browserExtensionPort by mutableStateOf(14370)

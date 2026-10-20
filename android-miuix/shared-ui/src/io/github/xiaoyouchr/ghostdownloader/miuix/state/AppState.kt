@@ -10,10 +10,16 @@ import io.github.xiaoyouchr.ghostdownloader.miuix.engine.HttpDownloadEngine
 import io.github.xiaoyouchr.ghostdownloader.miuix.engine.NameConflictPolicy
 import io.github.xiaoyouchr.ghostdownloader.miuix.engine.ProbeResult
 import io.github.xiaoyouchr.ghostdownloader.miuix.engine.TaskSnapshot
+import io.github.xiaoyouchr.ghostdownloader.miuix.bridge.BrowserBridge
+import io.github.xiaoyouchr.ghostdownloader.miuix.bridge.PairRequest
 import io.github.xiaoyouchr.ghostdownloader.miuix.model.DownloadTask
 import io.github.xiaoyouchr.ghostdownloader.miuix.model.MockTasks
 import io.github.xiaoyouchr.ghostdownloader.miuix.model.TaskStatus
 import io.github.xiaoyouchr.ghostdownloader.miuix.platform.PlatformFiles
+import io.github.xiaoyouchr.ghostdownloader.miuix.resolver.CategoryRules
+import io.github.xiaoyouchr.ghostdownloader.miuix.resolver.MediaResolver
+import io.github.xiaoyouchr.ghostdownloader.miuix.resolver.ResolvedMedia
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,6 +49,7 @@ enum class AppTab(val label: String) {
 class AppState(
     val engine: HttpDownloadEngine? = null,
     val platformFiles: PlatformFiles? = null,
+    bridgeTokenFile: File? = null,
     val demo: Boolean = engine == null
 ) {
     val settings = AppSettings()
@@ -78,18 +85,59 @@ class AppState(
         private set
     var draftBusy by mutableStateOf(false)
         private set
+    /** 解析出的媒体（B 站 / YouTube / 直链），确认下载时带上自定义请求头。 */
+    var draftResolved by mutableStateOf<ResolvedMedia?>(null)
+        private set
+    /** 解析结果说明（格式 / 需要 Referer 等）。 */
+    var draftNote by mutableStateOf<String?>(null)
+        private set
+    /** 本次任务的分片线程数（默认取设置里的预分配线程数）。 */
+    var draftSubworkerCount by mutableStateOf(8)
+
+    private val mediaResolver = MediaResolver()
+
+    // ---- 浏览器扩展桥接状态（设置页 / AppShell 展示用） ----
+    private val tokenStore = bridgeTokenFile?.let(::BridgeTokenStore)
+    private var bridgeHost: EngineBridgeHost? = null
+    private var lastBridgeAttemptAt = 0L
+    var bridgeInstance by mutableStateOf<BrowserBridge?>(null)
+        private set
+    var bridgeConnected by mutableStateOf(false)
+        private set
+    var bridgeError by mutableStateOf<String?>(null)
+        private set
+    var bridgePort by mutableStateOf(0)
+        private set
+    var pendingPairRequest by mutableStateOf<PairRequest?>(null)
+        private set
 
     val tasks = mutableStateListOf<DownloadTask>()
 
     init {
+        tokenStore?.load()?.let { settings.pairToken = it }
         engine?.let {
             settings.downloadFolder = it.defaultFolder()
             settings.maxTaskNum = it.maxConcurrent
             settings.preBlockNum = it.subworkerCount
+            bridgeHost = EngineBridgeHost(
+                engine = it,
+                settings = settings,
+                platformFiles = platformFiles,
+                appVersionProvider = { settings.appVersion },
+                tokenProvider = { settings.pairToken },
+                tokenUpdater = { token ->
+                    settings.pairToken = token
+                    tokenStore?.save(token)
+                    token
+                },
+                pairRequestListener = { request -> pendingPairRequest = request },
+                connectionListener = { connected -> bridgeConnected = connected }
+            )
             refreshFromEngine()
         }
         if (demo) tasks.addAll(MockTasks.tasks)
         if (draftFolder.isBlank()) draftFolder = settings.downloadFolder
+        draftSubworkerCount = settings.preBlockNum.coerceIn(1, SUBWORKER_LIMIT)
     }
 
     /** Compose 定时调用：真实模式拉取引擎快照并同步设置，演示模式推进模拟进度。 */
@@ -108,6 +156,72 @@ class AppState(
             }
         }
         refreshFromEngine()
+        syncBridge()
+        bridgeInstance?.broadcastSnapshot()
+    }
+
+    // ------------------------------------------------------- 浏览器扩展桥接
+
+    /** 根据设置启停 WebSocket 桥接；端口变化时自动重启。 */
+    fun syncBridge() {
+        val host = bridgeHost ?: return
+        if (!settings.browserExtensionEnabled) {
+            stopBridge()
+            return
+        }
+        val wantedPort = settings.browserExtensionPort
+        val current = bridgeInstance
+        if (current != null && current.isRunning && bridgePort == wantedPort) return
+        // 端口占用等失败场景限流重试，避免每 500ms 刷一次日志
+        if (current == null && System.currentTimeMillis() - lastBridgeAttemptAt < 5_000L) return
+        lastBridgeAttemptAt = System.currentTimeMillis()
+        stopBridge()
+        runCatching {
+            val created = BrowserBridge(host = host, port = wantedPort)
+            created.start()
+            bridgeInstance = created
+            bridgePort = created.actualPort
+            bridgeError = null
+        }.onFailure { error ->
+            bridgeError = error.message ?: "浏览器桥接启动失败"
+            bridgeInstance = null
+        }
+    }
+
+    private fun stopBridge() {
+        bridgeInstance?.close()
+        bridgeInstance = null
+        bridgePort = 0
+        bridgeConnected = false
+        pendingPairRequest = null
+    }
+
+    fun approvePairRequest() {
+        val requestId = pendingPairRequest?.requestId ?: return
+        bridgeInstance?.approvePair(requestId)
+        pendingPairRequest = null
+        bridgeConnected = true
+    }
+
+    fun rejectPairRequest() {
+        val requestId = pendingPairRequest?.requestId ?: return
+        bridgeInstance?.rejectPair(requestId)
+        pendingPairRequest = null
+    }
+
+    fun regeneratePairToken() {
+        val newToken = bridgeInstance?.regenerateToken()
+            ?: EngineBridgeHost.generateBridgeToken().also {
+                settings.pairToken = it
+                tokenStore?.save(it)
+            }
+        settings.pairToken = newToken
+    }
+
+    /** 应用退出时关闭桥接（引擎由平台入口负责关闭）。 */
+    fun close() {
+        stopBridge()
+        bridgeHost = null
     }
 
     // ------------------------------------------------------------------ 导航
@@ -136,9 +250,20 @@ class AppState(
         draftCategory = null
         draftParsed = false
         draftProbe = null
+        draftResolved = null
+        draftNote = null
         draftError = null
         draftBusy = false
+        draftSubworkerCount = settings.preBlockNum.coerceIn(1, SUBWORKER_LIMIT)
         showAddTaskSheet = true
+    }
+
+    fun updateDraftFolder(path: String) {
+        if (path.isNotBlank()) draftFolder = path.trim()
+    }
+
+    fun updateDraftSubworkerCount(value: Int) {
+        draftSubworkerCount = value.coerceIn(1, SUBWORKER_LIMIT)
     }
 
     fun closeAddTask() {
@@ -155,7 +280,10 @@ class AppState(
 
     // -------------------------------------------------------------- 新建任务
 
-    /** 解析用户粘贴的链接（真实引擎做两阶段 Range 探测）。 */
+    /**
+     * 解析用户粘贴的链接：
+     * 先走媒体解析（B 站 / YouTube / 磁力 / eD2k），普通链接再走引擎的两阶段 Range 探测。
+     */
     suspend fun parseDraft() {
         val url = draftUrl.trim()
         if (url.isBlank()) {
@@ -169,15 +297,37 @@ class AppState(
         }
         draftBusy = true
         draftError = null
+        draftParsed = false
+        draftProbe = null
+        draftResolved = null
+        draftNote = null
         try {
-            val result = withContext(Dispatchers.IO) { engine.probe(url) }
-            draftProbe = result
-            draftName = result.fileName
-            draftCategory = categoryFor(result.fileName)
+            val resolved = withContext(Dispatchers.IO) { mediaResolver.resolve(url) }
+            if (resolved != null) {
+                draftResolved = resolved
+                draftProbe = ProbeResult(
+                    url = resolved.url,
+                    fileName = resolved.fileName,
+                    totalBytes = resolved.totalBytes,
+                    canUseRange = resolved.canUseRange,
+                    contentType = null,
+                    lastModified = null
+                )
+                draftName = resolved.fileName
+                draftCategory = resolved.category ?: CategoryRules.detect(resolved.fileName)
+                draftNote = resolved.note
+            } else {
+                val result = withContext(Dispatchers.IO) { engine.probe(url) }
+                draftProbe = result
+                draftName = result.fileName
+                draftCategory = CategoryRules.detect(result.fileName)
+            }
             draftParsed = true
         } catch (error: Throwable) {
             draftParsed = false
             draftProbe = null
+            draftResolved = null
+            draftNote = null
             draftError = error.message ?: "链接解析失败"
         } finally {
             draftBusy = false
@@ -192,7 +342,9 @@ class AppState(
             confirmDraftDemo()
             return
         }
-        val folder = draftFolder.ifBlank { settings.downloadFolder }
+        val baseFolder = draftFolder.ifBlank { settings.downloadFolder }
+        val category = draftCategory
+        val folder = folderFor(baseFolder, if (settings.enableCategory) category else null)
         runCatching {
             engine.addTask(
                 url = probe.url,
@@ -204,7 +356,10 @@ class AppState(
                     NameConflictPolicy.OVERWRITE
                 } else {
                     NameConflictPolicy.KEEP_BOTH
-                }
+                },
+                headers = draftResolved?.headers ?: emptyMap(),
+                subworkerCount = draftSubworkerCount,
+                category = category
             )
             showAddTaskSheet = false
             refreshFromEngine()
@@ -216,9 +371,17 @@ class AppState(
     private fun parseDraftDemo(url: String) {
         val fileName = url.substringAfterLast('/').substringBefore('?').ifBlank { "download.bin" }
         draftName = fileName
-        draftCategory = categoryFor(fileName)
+        draftCategory = CategoryRules.detect(fileName)
         draftParsed = true
+        draftResolved = null
+        draftNote = null
         draftProbe = ProbeResult(url, fileName, 0L, canUseRange = false, contentType = null, lastModified = null)
+    }
+
+    /** 分类目录：启用自动分类且能识别分类时落到 `{base}/{category}`。 */
+    private fun folderFor(base: String, category: String?): String {
+        if (category.isNullOrBlank()) return base
+        return File(base, CategoryRules.folderName(category)).absolutePath
     }
 
     // -------------------------------------------------------------- 任务操作
@@ -362,7 +525,7 @@ class AppState(
         id = id,
         name = name,
         folder = folder,
-        category = null,
+        category = category,
         status = when (status) {
             EngineStatus.WAITING -> TaskStatus.WAITING
             EngineStatus.RUNNING -> TaskStatus.RUNNING
@@ -389,14 +552,6 @@ class AppState(
     private fun formatCompletedAt(epochMillis: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMillis))
 
-    private fun categoryFor(fileName: String): String? = when {
-        fileName.endsWith(".apk", true) || fileName.endsWith(".exe", true) || fileName.endsWith(".dmg", true) -> "软件"
-        fileName.endsWith(".iso", true) -> "镜像"
-        fileName.endsWith(".zip", true) || fileName.endsWith(".7z", true) || fileName.endsWith(".tar", true) -> "压缩包"
-        fileName.endsWith(".mp4", true) || fileName.endsWith(".mkv", true) || fileName.endsWith(".webm", true) -> "视频"
-        fileName.endsWith(".mp3", true) || fileName.endsWith(".flac", true) -> "音频"
-        else -> null
-    }
 
     // ---------------------------------------------------------------- 演示模式
 

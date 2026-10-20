@@ -1,11 +1,15 @@
 package io.github.xiaoyouchr.ghostdownloader.miuix.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -21,10 +25,14 @@ import io.github.xiaoyouchr.ghostdownloader.miuix.state.NameConflictOption
 import io.github.xiaoyouchr.ghostdownloader.miuix.state.ThemeModeOption
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Ok
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
@@ -44,6 +52,8 @@ fun SettingsScreen(state: AppState, contentPadding: PaddingValues) {
     var languageDialog by remember { mutableStateOf(false) }
     var conflictDialog by remember { mutableStateOf(false) }
     var tokenDialog by remember { mutableStateOf(false) }
+    var portDialog by remember { mutableStateOf(false) }
+    var portInput by remember { mutableStateOf("") }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -66,12 +76,6 @@ fun SettingsScreen(state: AppState, contentPadding: PaddingValues) {
                         )
                     },
                     onClick = { themeDialog = true }
-                )
-                SwitchPreference(
-                    title = "动态取色",
-                    summary = "由壁纸生成 Miuix 配色（Android 12+ Monet）",
-                    checked = settings.dynamicColor,
-                    onCheckedChange = { settings.dynamicColor = it }
                 )
                 ArrowPreference(
                     title = "语言",
@@ -164,13 +168,13 @@ fun SettingsScreen(state: AppState, contentPadding: PaddingValues) {
             SettingsCard {
                 SwitchPreference(
                     title = "启用下载分类",
-                    summary = "根据扩展名将下载任务归类，便于筛选",
+                    summary = "按扩展名自动保存到 视频 / 音频 / 软件 / 压缩包 / 图片 / 文档 子目录",
                     checked = settings.enableCategory,
                     onCheckedChange = { settings.enableCategory = it }
                 )
                 ArrowPreference(
-                    title = "管理分类规则",
-                    summary = "当前共 ${settings.categoryCount} 个分类"
+                    title = "分类规则",
+                    summary = "视频 · 音频 · 软件 · 压缩包 · 图片 · 文档（内置 6 类）"
                 )
             }
         }
@@ -180,24 +184,39 @@ fun SettingsScreen(state: AppState, contentPadding: PaddingValues) {
             SettingsCard {
                 SwitchPreference(
                     title = "启用浏览器扩展",
-                    summary = "接收浏览器扩展发来的链接和文件",
+                    summary = "接收浏览器扩展发来的链接和文件（WebSocket 桥接）",
                     checked = settings.browserExtensionEnabled,
                     onCheckedChange = { settings.browserExtensionEnabled = it }
                 )
                 ArrowPreference(
                     title = "服务端口",
+                    summary = "扩展连接地址 ws://<手机IP>:${settings.browserExtensionPort}（或 adb reverse）",
                     endActions = {
                         Text(
                             text = "${settings.browserExtensionPort}",
                             fontSize = 14.sp,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                         )
+                    },
+                    onClick = {
+                        portInput = "${settings.browserExtensionPort}"
+                        portDialog = true
                     }
                 )
                 ArrowPreference(
                     title = "配对令牌",
-                    summary = "点击查看，用于浏览器扩展配对",
+                    summary = "扩展首次连接需要输入该令牌",
                     onClick = { tokenDialog = true }
+                )
+                BasicComponent(
+                    title = "连接状态",
+                    summary = when {
+                        !settings.browserExtensionEnabled -> "已关闭"
+                        state.bridgeError != null -> "启动失败：${state.bridgeError}"
+                        state.bridgeConnected -> "扩展已连接 · 端口 ${state.bridgePort}"
+                        state.bridgePort > 0 -> "等待扩展连接 · 端口 ${state.bridgePort}"
+                        else -> "未启动"
+                    }
                 )
             }
         }
@@ -265,6 +284,65 @@ fun SettingsScreen(state: AppState, contentPadding: PaddingValues) {
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(top = 6.dp)
             )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    text = "重新生成",
+                    onClick = { state.regeneratePairToken() },
+                    modifier = Modifier.width(104.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    onClick = { tokenDialog = false },
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                    modifier = Modifier.width(88.dp)
+                ) {
+                    Text("关闭", fontSize = 15.sp)
+                }
+            }
+        }
+    }
+
+    OverlayDialog(
+        show = portDialog,
+        title = "服务端口",
+        summary = "浏览器扩展通过 WebSocket 连接该端口（1024-65535）",
+        onDismissRequest = { portDialog = false }
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            TextField(
+                value = portInput,
+                onValueChange = { portInput = it.filter { ch -> ch.isDigit() } },
+                label = "端口",
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    text = "取消",
+                    onClick = { portDialog = false },
+                    modifier = Modifier.width(78.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    onClick = {
+                        portInput.toIntOrNull()?.takeIf { it in 1024..65535 }?.let {
+                            settings.browserExtensionPort = it
+                            portDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColorsPrimary(),
+                    modifier = Modifier.width(88.dp)
+                ) {
+                    Text("确定", fontSize = 15.sp)
+                }
+            }
         }
     }
 }

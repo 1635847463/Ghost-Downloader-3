@@ -18,9 +18,13 @@ dependencies {
     implementation(libs.miuix.icons)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
+    implementation(libs.java.websocket)
+    implementation(libs.gson)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.core)
+    testImplementation(libs.java.websocket)
+    testImplementation(libs.gson)
 }
 
 compose.desktop {
@@ -60,6 +64,20 @@ tasks.register<JavaExec>("engineSmoke") {
         project.findProperty("url")?.toString()
             ?: "https://raw.githubusercontent.com/XiaoYouChR/Ghost-Downloader-3/main/README.md"
     )
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(21))
+        }
+    )
+}
+
+// 媒体解析冒烟测试：gradlew :preview:resolverSmoke -Purl=https://www.bilibili.com/video/BV...
+tasks.register<JavaExec>("resolverSmoke") {
+    group = "verification"
+    description = "Resolve Bilibili / YouTube / direct URL without GUI"
+    mainClass.set("io.github.xiaoyouchr.ghostdownloader.miuix.ResolveSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    args(project.findProperty("url")?.toString() ?: "")
     javaLauncher.set(
         javaToolchains.launcherFor {
             languageVersion.set(JavaLanguageVersion.of(21))

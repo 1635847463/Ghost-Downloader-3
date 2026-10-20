@@ -41,4 +41,6 @@ dependencies {
     implementation(libs.miuix.icons)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
+    implementation(libs.java.websocket)
+    implementation(libs.gson)
 }

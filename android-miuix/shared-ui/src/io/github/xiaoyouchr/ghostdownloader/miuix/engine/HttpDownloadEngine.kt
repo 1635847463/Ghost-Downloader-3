@@ -167,8 +167,13 @@ class HttpDownloadEngine(
 
     private data class ProbeResponse(val status: Int, val headers: Headers, val finalUrl: String)
 
-    private fun requestProbe(url: String, range: String?): ProbeResponse {
+    private fun requestProbe(
+        url: String,
+        range: String?,
+        headers: Map<String, String> = emptyMap()
+    ): ProbeResponse {
         val builder = Request.Builder().url(url).header("Accept-Encoding", "identity")
+        for ((key, value) in headers) builder.header(key, value)
         if (range != null) builder.header("Range", range)
         client.newCall(builder.build()).execute().use { response ->
             return ProbeResponse(
@@ -188,7 +193,10 @@ class HttpDownloadEngine(
         preferredName: String,
         totalBytes: Long,
         canUseRange: Boolean,
-        policy: NameConflictPolicy = NameConflictPolicy.KEEP_BOTH
+        policy: NameConflictPolicy = NameConflictPolicy.KEEP_BOTH,
+        headers: Map<String, String> = emptyMap(),
+        subworkerCount: Int = 0,
+        category: String? = null
     ): TaskSnapshot = synchronized(lock) {
         val dir = File(folder.ifBlank { dirs.downloadDir.absolutePath })
         dir.mkdirs()
@@ -207,7 +215,9 @@ class HttpDownloadEngine(
             totalBytes = totalBytes.coerceAtLeast(0L),
             canUseRange = canUseRange,
             createdAt = System.currentTimeMillis(),
-            subworkerCount = subworkerCount
+            subworkerCount = if (subworkerCount > 0) subworkerCount.coerceIn(1, 16) else this.subworkerCount,
+            headers = headers,
+            category = category
         )
         records[record.id] = record
         waitingQueue.addLast(record.id)
@@ -415,7 +425,7 @@ class HttpDownloadEngine(
         File(record.folder).mkdirs()
 
         // 轻量探测：只为跟随重定向拿到最终 URL，并刷新可能变化的大小（文档 run() 的 probeHeaders）。
-        val runProbe = runCatching { requestProbe(record.url, "bytes=0-0") }.getOrNull()
+        val runProbe = runCatching { requestProbe(record.url, "bytes=0-0", record.headers) }.getOrNull()
         if (runProbe != null) {
             record.effectiveUrl = runProbe.finalUrl
             record.lastModified = runProbe.headers["Last-Modified"] ?: record.lastModified
@@ -558,6 +568,13 @@ class HttpDownloadEngine(
         }
     }
 
+    /** 带 Task 自定义请求头（Referer/Origin/Cookie 等）的请求构造器。 */
+    private fun recordRequest(record: TaskRecord): Request.Builder {
+        val builder = Request.Builder().url(record.effectiveUrl)
+        for ((key, value) in record.headers) builder.header(key, value)
+        return builder
+    }
+
     /** 206 分片下载：每次请求 `bytes=position-end`，边下边写，断线 5 秒后从当前位置重试。 */
     private suspend fun downloadRange(record: TaskRecord, subworker: Subworker) {
         var attempt = 0
@@ -566,8 +583,7 @@ class HttpDownloadEngine(
             val from = subworker.position
             val to = subworker.end
             val call = client.newCall(
-                Request.Builder()
-                    .url(record.effectiveUrl)
+                recordRequest(record)
                     .header("Range", "bytes=$from-$to")
                     .header("Accept-Encoding", "identity")
                     .build()
@@ -627,8 +643,7 @@ class HttpDownloadEngine(
             currentCoroutineContext().ensureActive()
             val from = subworker.position
             val call = client.newCall(
-                Request.Builder()
-                    .url(record.effectiveUrl)
+                recordRequest(record)
                     .header("Range", "bytes=$from-")
                     .header("Accept-Encoding", "identity")
                     .build()
@@ -690,8 +705,7 @@ class HttpDownloadEngine(
             subworker.receivedBytes = 0L
             record.downloaded.set(0L)
             val call = client.newCall(
-                Request.Builder()
-                    .url(record.effectiveUrl)
+                recordRequest(record)
                     .header("Accept-Encoding", "identity")
                     .build()
             )
@@ -979,7 +993,9 @@ class HttpDownloadEngine(
                 createdAt = record.createdAt,
                 completedAt = record.completedAt,
                 downloadedBytes = record.downloaded.get(),
-                subworkerCount = record.subworkerCount
+                subworkerCount = record.subworkerCount,
+                headers = record.headers,
+                category = record.category
             )
         }
         store.save(tasks)
@@ -1000,7 +1016,9 @@ class HttpDownloadEngine(
                 totalBytes = persisted.totalBytes,
                 canUseRange = persisted.canUseRange,
                 createdAt = persisted.createdAt,
-                subworkerCount = persisted.subworkerCount
+                subworkerCount = persisted.subworkerCount,
+                headers = persisted.headers,
+                category = persisted.category
             )
             record.completedAt = persisted.completedAt
             record.error = persisted.error
@@ -1041,6 +1059,7 @@ class HttpDownloadEngine(
             url = record.url,
             name = record.name,
             folder = record.folder,
+            category = record.category,
             status = record.status,
             downloadedBytes = record.downloaded.get(),
             totalBytes = total,
@@ -1162,7 +1181,9 @@ internal class TaskRecord(
     @Volatile var totalBytes: Long,
     @Volatile var canUseRange: Boolean,
     val createdAt: Long,
-    var subworkerCount: Int
+    var subworkerCount: Int,
+    val headers: Map<String, String> = emptyMap(),
+    val category: String? = null
 ) {
     @Volatile
     var completedAt: Long? = null

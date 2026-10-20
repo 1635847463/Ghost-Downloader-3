@@ -34,7 +34,7 @@ fun main() {
                 state = rememberWindowState(size = DpSize(420.dp, 900.dp))
             ) {
                 window.minimumSize = Dimension(320, 640)
-                App(engine = engine, platformFiles = platformFiles)
+                App(engine = engine, platformFiles = platformFiles, bridgeTokenFile = File(home, ".ghostdownloader/bridge-token.txt"))
             }
         }
     } finally {
